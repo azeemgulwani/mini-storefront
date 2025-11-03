@@ -1,6 +1,6 @@
 'use client';
 
-export default function CartSummary({ itemCount, total, decrement, reset, cart }) {
+export default function CartSummary({ lines, itemCount, total, decrement, reset }) {
   const hasItems = itemCount > 0;
 
   return (
@@ -29,13 +29,15 @@ export default function CartSummary({ itemCount, total, decrement, reset, cart }
 
       {hasItems && (
         <ul className="mt-3 space-y-1 text-sm">
-          {Object.entries(cart).map(([pid, qty]) => (
-            <li key={pid} className="flex items-center justify-between">
-              <span className="truncate">#{pid}</span>
-              <span className="ml-2">x{qty}</span>
+          {lines.map((line) => (
+            <li key={line.id} className="flex items-center justify-between">
+              <span className="truncate">{line.name}</span>
+              <span className="ml-2">x{line.qty}</span>
+              <span className="ml-2">${(line.price * line.qty).toFixed(2)}</span>
               <button
                 className="ml-3 rounded-lg border px-2 py-1 hover:bg-gray-50"
-                onClick={() => decrement(pid)}
+                onClick={() => decrement(line.id)}
+                title={`Remove one ${line.name}`}
               >
                 −
               </button>
