@@ -15,7 +15,11 @@ export default function Catalog() {
   const [error, setError] = useState("");
 
   const [filters, setFilters] = useState({ category: "", price: "" });
-  const [cart, setCart] = useState({}); // { [productId]: qty }
+
+  // Cart holds what the user wants; pending holds units waiting to be applied to stock.
+  // Example: cart = { p1: 2 }, pending = { p1: 2 } initially; interval will apply 1 at a time.
+  const [cart, setCart] = useState({});     // { [productId]: qty }
+  const [pending, setPending] = useState({}); // { [productId]: qty to apply to stock over time }
 
   // Fetch products on mount
   useEffect(() => {
@@ -39,21 +43,7 @@ export default function Catalog() {
     return () => { alive = false; };
   }, []);
 
-  // Simulate stock changes every 4s (after mount). Cleanup on unmount.
-  useEffect(() => {
-    if (products.length === 0) return;
-    const id = setInterval(() => {
-      setProducts((prev) => {
-        const idx = Math.floor(Math.random() * prev.length);
-        return prev.map((p, i) =>
-          i === idx ? { ...p, stock: Math.max(0, p.stock - (Math.random() < 0.5 ? 1 : 0)) } : p
-        );
-      });
-    }, 4000);
-    return () => clearInterval(id);
-  }, [products.length]);
-
-  // Map for quick lookup (name/price by id)
+  // Quick lookup by id
   const productsById = useMemo(() => {
     const map = Object.create(null);
     for (const p of products) map[p.id] = p;
@@ -64,7 +54,7 @@ export default function Catalog() {
   const updateFilters = (key, value) =>
     setFilters((f) => ({ ...f, [key]: value }));
 
-  // Categories from base list (stable)
+  // Categories (stable from original dataset)
   const categories = useMemo(() => {
     const set = new Set(baseProducts.map((p) => p.category));
     return Array.from(set).sort();
@@ -79,24 +69,21 @@ export default function Catalog() {
     );
   }, [products, filters]);
 
-  // Cart actions with stock synchronization
+  // Cart actions (no immediate stock change here!)
+  // We enqueue pending stock updates and let the interval apply them over time.
   const addToCart = (product) => {
-    // guard: respect current stock
     const current = productsById[product.id];
     if (!current || current.stock <= 0) return;
 
-    // 1) increment cart
+    // 1) Increase cart quantity
     setCart((c) => ({ ...c, [product.id]: (c[product.id] || 0) + 1 }));
 
-    // 2) decrement stock in products list
-    setProducts((prev) =>
-      prev.map((p) =>
-        p.id === product.id ? { ...p, stock: Math.max(0, p.stock - 1) } : p
-      )
-    );
+    // 2) Enqueue one pending unit for interval to apply later
+    setPending((q) => ({ ...q, [product.id]: (q[product.id] || 0) + 1 }));
   };
 
   const decrement = (productId) => {
+    // If item exists in cart, decrease by 1
     setCart((c) => {
       const qty = (c[productId] || 0) - 1;
       const next = { ...c };
@@ -105,26 +92,73 @@ export default function Catalog() {
       return next;
     });
 
-    // restore one unit of stock when an item is removed from cart
-    setProducts((prev) =>
-      prev.map((p) =>
-        p.id === productId ? { ...p, stock: p.stock + 1 } : p
-      )
-    );
+    // If we still have a pending unit not yet applied, cancel it.
+    // Otherwise, the unit was already applied to stock → restore one unit to stock.
+    setPending((q) => {
+      const pendingQty = q[productId] || 0;
+      if (pendingQty > 0) {
+        const nextQ = { ...q, [productId]: pendingQty - 1 };
+        if (nextQ[productId] <= 0) delete nextQ[productId];
+        return nextQ;
+      } else {
+        // Restore stock since applied earlier
+        setProducts((prev) =>
+          prev.map((p) => (p.id === productId ? { ...p, stock: p.stock + 1 } : p))
+        );
+        return q;
+      }
+    });
   };
 
   const resetCart = () => {
-    // add back all quantities to stock
+    // Return any already-applied units to stock (cart - pending)
     setProducts((prev) => {
-      const back = { ...cart };
-      return prev.map((p) =>
-        back[p.id] ? { ...p, stock: p.stock + back[p.id] } : p
-      );
+      const next = prev.map((p) => {
+        const cQty = cart[p.id] || 0;
+        const pend = pending[p.id] || 0;
+        const applied = Math.max(0, cQty - pend); // units already applied to stock
+        return applied > 0 ? { ...p, stock: p.stock + applied } : p;
+      });
+      return next;
     });
+
+    // Clear cart and pending
     setCart({});
+    setPending({});
   };
 
-  // Derived totals and cart lines with names
+  // Interval: apply pending units to stock over time.
+  // Runs ONLY when there is something in pending.
+  useEffect(() => {
+    const keys = Object.keys(pending);
+    if (keys.length === 0) return;
+
+    const id = setInterval(() => {
+      // Pick the first product in the queue and apply 1 unit
+      const pid = Object.keys(pending)[0];
+      if (!pid) return;
+
+      // Apply to stock (decrement if available)
+      setProducts((prev) =>
+        prev.map((p) =>
+          p.id === pid && p.stock > 0 ? { ...p, stock: p.stock - 1 } : p
+        )
+      );
+
+      // Decrease pending for that product by 1
+      setPending((q) => {
+        const qty = (q[pid] || 0) - 1;
+        const nextQ = { ...q };
+        if (qty <= 0) delete nextQ[pid];
+        else nextQ[pid] = qty;
+        return nextQ;
+      });
+    }, 1200); // one unit ~every 1.2s so you can see it change
+
+    return () => clearInterval(id); // cleanup
+  }, [pending]);
+
+  // Totals + cart lines with names
   const { itemCount, total, lines } = useMemo(() => {
     let count = 0;
     let sum = 0;
@@ -145,6 +179,7 @@ export default function Catalog() {
 
   return (
     <section className="space-y-6">
+      {/* Controls row */}
       <div className="grid gap-3 md:grid-cols-3">
         <CategoryFilter
           categories={categories}
@@ -164,6 +199,7 @@ export default function Catalog() {
         />
       </div>
 
+      {/* Products */}
       {filtered.length === 0 ? (
         <StatusMessage state="empty" />
       ) : (
